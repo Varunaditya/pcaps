@@ -1,21 +1,29 @@
 from pathlib import Path
 import dpkt
 from socket import inet_ntoa
+import threading
 
+channelTraffic = dict()
+globalStats = dict()
+threads = list()
 
-class streamHandler(object):
+class streamHandler:
     def __init__(self, channel_name):
         self.name = channel_name
-        self._fh = Path().joinpath("logs").joinpath(self.name).open('wb')
-        self.total = 0
+        self._fh = open(Path().joinpath("logs").joinpath(self.name), 'wb')
 
     def add(self, ts, pkt):
-        self._fh.write(pkt)
-        
-        self.total += 1
-
-    def stats(self):
-        return {'total': self.total}
+        if self.name not in channelTraffic.keys():
+            channelTraffic[self.name] = [(ts, pkt)]
+            globalStats[self.name] = [1, len(pkt)]
+        else:
+            channelTraffic[self.name].append((ts, pkt))
+            currentStat = globalStats[self.name]
+            globalStats.update({self.name: [currentStat[0] + 1, currentStat[1] + len(pkt)]})
+        while len(channelTraffic[self.name]):
+            channelTraffic[self.name] = sorted(channelTraffic[self.name], key=lambda x: x[0])
+            self._fh.write(channelTraffic[self.name][0][1])
+            channelTraffic[self.name].pop(0)
 
 
 class pCapHandling:
@@ -24,22 +32,15 @@ class pCapHandling:
         self.pcapFiles = pcap_files
         self._channels = {}
 
-
-    def stats(self):
-        stats = {}
-        totals = {'total': 0}
-        for cname, channel in self._channels.items():
-            stats[cname] = channel.stats()
-            totals['total'] += stats[cname]['total']
-        stats['all'] = totals
-        return stats
-
-
     def pCapProcessing(self):
-        for pcap_file in self.pcapFiles:
-            self.processPcap(pcap_file)
-        return self.stats()
-
+        # threads = ["t#" + str(i) for i in range(0, len(self.pcapFiles))]
+        for index, pcap_file in enumerate(self.pcapFiles):
+            thread = threading.Thread(target=self.processPcap, args=(pcap_file,))
+            thread.start()
+            threads.append(thread)
+        for _ in threads:
+            _.join()
+        return self
 
     def processPcap(self, pcap_file):
         for ts, buf in dpkt.pcap.Reader(open(pcap_file, 'rb')):
@@ -68,6 +69,7 @@ if __name__ == "__main__":
     for file in Path().joinpath('pcaps').iterdir():
         pcaps.append(file)
     phndler = pCapHandling(pcaps)
-    stats = phndler.pCapProcessing()
-    for channel, count in stats.items():
-        print("{} : {}".format(channel, count['total']))
+    phndler.pCapProcessing()
+    for channel, stat in globalStats.items():
+        # stat[0] = counter | stat[1] = bytes
+        print("{} -- Count: {} | Bytes: {}".format(channel, stat[0], stat[1]))
